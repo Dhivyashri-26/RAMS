@@ -1,0 +1,5 @@
+======================================================================
+RAMS FRAMEWORK — XAI THREAT EXPLANATION REPORT
+Objective 4: Explainable AI for Transparent Decision-Making
+======================================================================
+
