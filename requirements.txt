@@ -1,0 +1,32 @@
+# RAMS Framework - Objectives 3 & 4 Requirements
+# Install: pip install -r requirements.txt
+
+# Core ML
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Deep Learning (Bi-LSTM)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Explainable AI
+shap>=0.44.0
+
+# Data Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# Data Processing
+imbalanced-learn>=0.11.0   # SMOTE for class imbalance
+scipy>=1.11.0
+
+# Utilities
+joblib>=1.3.0
+tqdm>=4.65.0
+colorama>=0.4.6
+
+# Optional: Kafka streaming integration (for Obj 3 cloud layer)
+# kafka-python>=2.0.2

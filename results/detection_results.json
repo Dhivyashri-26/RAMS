@@ -1,0 +1,9 @@
+{
+  "timestamp": "2026-05-10T19:24:34.534924",
+  "xgboost_accuracy": 0.99887,
+  "xgboost_f1_weighted": 0.9988310634635859,
+  "bilstm_f1_weighted": 0.9824378171534401,
+  "ensemble_accuracy": 0.6576857685768577,
+  "ensemble_f1_weighted": 0.6571799976593187,
+  "ensemble_f1_macro": 0.07161043877564054
+}
