@@ -1,0 +1,8 @@
+{
+  "total_flows": 210006,
+  "benign": 143656,
+  "ddos": 63204,
+  "botnet": 300,
+  "dos": 1823,
+  "port_scan": 1023
+}

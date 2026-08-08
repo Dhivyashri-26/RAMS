@@ -1,5 +1,7 @@
-======================================================================
-RAMS FRAMEWORK — XAI THREAT EXPLANATION REPORT
-Objective 4: Explainable AI for Transparent Decision-Making
-======================================================================
+RAMS XAI THREAT EXPLANATION REPORT
+Objective 4
+
+Alert: ALERT-004 — DoS Hulk
+Confidence: 100.0%
+Top indicator: Init_Win_bytes_forward
 

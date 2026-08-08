@@ -1,0 +1,110 @@
+{
+  "alert_id": "ALERT-004",
+  "threat_class": "DoS Hulk",
+  "confidence": 0.9999922513961792,
+  "top_positive_features": [
+    {
+      "feature": "Init_Win_bytes_forward",
+      "shap_value": 2.071622610092163,
+      "feature_value": -0.46863592212881616
+    },
+    {
+      "feature": "Bwd Packets/s",
+      "shap_value": 1.5118436813354492,
+      "feature_value": -0.23981692627261694
+    },
+    {
+      "feature": "Flow IAT Min",
+      "shap_value": 1.0959397554397583,
+      "feature_value": -0.05710610460948411
+    },
+    {
+      "feature": "Average Packet Size",
+      "shap_value": 0.8218614459037781,
+      "feature_value": -0.5806628047942795
+    },
+    {
+      "feature": "Packet Length Mean",
+      "shap_value": 0.6773224472999573,
+      "feature_value": -0.5646305691574868
+    },
+    {
+      "feature": "Fwd Packets/s",
+      "shap_value": 0.43479210138320923,
+      "feature_value": 7.827640526664977
+    },
+    {
+      "feature": "Flow IAT Mean",
+      "shap_value": 0.39237505197525024,
+      "feature_value": -0.29728253686332845
+    },
+    {
+      "feature": "Flow Duration",
+      "shap_value": 0.2058342844247818,
+      "feature_value": -0.4390897719202414
+    },
+    {
+      "feature": "Flow IAT Max",
+      "shap_value": 0.1687425673007965,
+      "feature_value": -0.3755329303975607
+    },
+    {
+      "feature": "Fwd Packet Length Min",
+      "shap_value": 0.14335262775421143,
+      "feature_value": -0.31899335147768754
+    }
+  ],
+  "top_negative_features": [
+    {
+      "feature": "Init_Win_bytes_backward",
+      "shap_value": -0.20700053870677948,
+      "feature_value": -0.23399559124436395
+    },
+    {
+      "feature": "Fwd IAT Max",
+      "shap_value": -0.18178726732730865,
+      "feature_value": -0.3687942400478195
+    },
+    {
+      "feature": "Fwd IAT Total",
+      "shap_value": -0.133500337600708,
+      "feature_value": -0.43106725265563456
+    },
+    {
+      "feature": "Total Length of Bwd Packets",
+      "shap_value": -0.12512138485908508,
+      "feature_value": -0.14441856361864444
+    },
+    {
+      "feature": "Flow Packets/s",
+      "shap_value": -0.10497739911079407,
+      "feature_value": 7.6071302235407865
+    },
+    {
+      "feature": "Fwd IAT Mean",
+      "shap_value": -0.08100438117980957,
+      "feature_value": -0.2758250637914816
+    },
+    {
+      "feature": "Bwd Packet Length Mean",
+      "shap_value": -0.06003430485725403,
+      "feature_value": -0.5061141851513384
+    },
+    {
+      "feature": "Bwd Packet Length Std",
+      "shap_value": -0.05422595515847206,
+      "feature_value": -0.39973899198273055
+    },
+    {
+      "feature": "Fwd IAT Min",
+      "shap_value": -0.045366935431957245,
+      "feature_value": -0.118750834298302
+    },
+    {
+      "feature": "ACK Flag Count",
+      "shap_value": -0.031500451266765594,
+      "feature_value": 1.4701413582052407
+    }
+  ],
+  "plot_path": "D:\\Cloud security\\rams_complete\\rams_project\\results\\waterfall_ALERT-004.png"
+}

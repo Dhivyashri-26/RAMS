@@ -1,21 +1,6 @@
 """
-explainability/shap_explainer.py — SHAP-Based Explainable AI Module
-RAMS Framework — Objective 4
-
-Provides transparent, interpretable explanations for every threat detection
-decision using SHAP (SHapley Additive exPlanations).
-
-Reference:
-  "Enhancing Healthcare Data Privacy in Cloud IoT Networks Using Anomaly
-   Detection and Optimization with Explainable AI (ExAI)"
-  → Adapted for cybersecurity threat detection in smart mobility networks
-
-SHAP integration points:
-  1. TreeExplainer → XGBoost (fast, exact Shapley values)
-  2. DeepExplainer → Bi-LSTM (approximate, sampled background)
-  3. Global feature importance (dataset-level)
-  4. Local explanation (per-alert, per-flow)
-  5. Threat report generation (human-readable output for SOC analysts)
+explainability/shap_explainer.py — SHAP XAI Module (Objective 4)
+All version-compatibility fixes applied.
 """
 
 import os
@@ -23,610 +8,402 @@ import json
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")   # Non-interactive backend for server environments
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import warnings
 warnings.filterwarnings("ignore")
-
 import shap
+
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import RESULTS_DIR
+
+
+def _safe_feat_name(feat_list, i):
+    """Safely get feature name by index."""
+    try:
+        if feat_list is not None and len(feat_list) > 0:
+            if 0 <= int(i) < len(feat_list):
+                return str(feat_list[int(i)])
+    except Exception:
+        pass
+    return f"f{i}"
+
+
+def _mean_abs_shap(shap_values):
+    """
+    Compute mean |SHAP| per feature, handling both:
+      - list of arrays (multi-class XGBoost): list of (n_samples, n_features)
+      - single 2D array (binary): (n_samples, n_features)
+      - single 3D array: (n_samples, n_features, n_classes)
+    Returns: 1D array of shape (n_features,)
+    """
+    if isinstance(shap_values, list):
+        # Multi-class: list of (n_samples, n_features)
+        return np.mean([np.abs(np.array(sv)).mean(axis=0)
+                        for sv in shap_values], axis=0)
+    sv = np.array(shap_values)
+    if sv.ndim == 3:
+        # (n_samples, n_features, n_classes)
+        return np.abs(sv).mean(axis=(0, 2))
+    elif sv.ndim == 2:
+        return np.abs(sv).mean(axis=0)
+    else:
+        return np.abs(sv)
+
+
+def _get_class_shap(shap_values, class_idx):
+    """Extract SHAP values for a specific class."""
+    if isinstance(shap_values, list):
+        return np.array(shap_values[class_idx])
+    sv = np.array(shap_values)
+    if sv.ndim == 3:
+        return sv[:, :, class_idx]
+    return sv
 
 
 class RAMSExplainer:
-    """
-    SHAP-based Explainable AI for RAMS Hybrid Detection Engine.
-
-    Fulfils Objective 4: "Integrate Explainable AI (XAI) for
-    transparent decision-making."
-
-    Key outputs:
-      - Global SHAP summary plots (what features matter most overall)
-      - Per-class SHAP beeswarm plots (how each attack type is detected)
-      - Local waterfall/force plots (why THIS specific alert was raised)
-      - Human-readable threat explanation reports
-      - JSON explanation export (for API/dashboard integration)
-    """
-
     def __init__(self, xgboost_model, bilstm_trainer=None,
-                 feature_names: list = None, class_names: list = None,
-                 config: dict = None, output_dir: str = "results"):
-        """
-        Args:
-            xgboost_model: fitted XGBoostDetector
-            bilstm_trainer: fitted BiLSTMTrainer (optional, for deep SHAP)
-            feature_names: list of feature column names
-            class_names: list of threat class names
-            config: SHAP_CONFIG from config.py
-            output_dir: directory to save SHAP plots and reports
-        """
+                 feature_names=None, class_names=None,
+                 config=None, output_dir=None):
         self.xgboost_model = xgboost_model
         self.bilstm_trainer = bilstm_trainer
-        self.feature_names = feature_names or []
-        self.class_names = class_names or []
+        self.feature_names = list(feature_names) if feature_names is not None else []
+        self.class_names = list(class_names) if class_names is not None else []
         self.config = config or {}
-        self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
-
+        self.output_dir = output_dir or RESULTS_DIR
+        os.makedirs(self.output_dir, exist_ok=True)
         self.xgb_explainer = None
-        self.deep_explainer = None
         self.shap_values_xgb = None
-
+        self.X_sample_xgb = None
         print("[XAI] RAMS Explainer initialised (Objective 4)")
 
-    # ══════════════════════════════════════════════════════════════
-    # SETUP EXPLAINERS
-    # ══════════════════════════════════════════════════════════════
-
-    def setup_tree_explainer(self, X_background: np.ndarray = None):
-        """
-        Initialise SHAP TreeExplainer for XGBoost.
-
-        TreeExplainer computes exact Shapley values for tree models.
-        No background data needed (uses tree structure directly).
-        This is the primary explainer for RAMS (fast, exact).
-        """
+    def setup_tree_explainer(self):
         print("[XAI] Setting up TreeExplainer for XGBoost...")
         self.xgb_explainer = shap.TreeExplainer(
             self.xgboost_model.model,
             feature_perturbation="tree_path_dependent",
             model_output="raw"
         )
-        print("[XAI] TreeExplainer ready.")
 
-    def setup_deep_explainer(self, X_background: np.ndarray):
-        """
-        Initialise SHAP DeepExplainer for Bi-LSTM.
-
-        Uses a small background sample to estimate baseline attribution.
-        DeepExplainer uses the DeepLIFT algorithm adapted for PyTorch.
-
-        Args:
-            X_background: (n_background, seq_len, n_features)
-                         Representative sample of BENIGN traffic
-        """
-        if self.bilstm_trainer is None:
-            print("[XAI] No Bi-LSTM trainer provided, skipping DeepExplainer.")
-            return
-
-        import torch
-        print(f"[XAI] Setting up DeepExplainer for Bi-LSTM "
-              f"(background={len(X_background)} samples)...")
-        model = self.bilstm_trainer.model
-        model.eval()
-        device = self.bilstm_trainer.device
-        bg_tensor = torch.tensor(X_background, dtype=torch.float32).to(device)
-
-        self.deep_explainer = shap.DeepExplainer(model, bg_tensor)
-        print("[XAI] DeepExplainer ready.")
-
-    # ══════════════════════════════════════════════════════════════
-    # COMPUTE SHAP VALUES
-    # ══════════════════════════════════════════════════════════════
-
-    def compute_xgb_shap(self, X: np.ndarray,
-                          max_samples: int = 5000) -> np.ndarray:
-        """
-        Compute SHAP values for XGBoost predictions.
-
-        For multi-class: returns array of shape (n_samples, n_features, n_classes)
-        For binary:      returns array of shape (n_samples, n_features)
-
-        Subsample for large datasets to keep computation tractable.
-        """
+    def compute_xgb_shap(self, X, max_samples=5000):
         if self.xgb_explainer is None:
             self.setup_tree_explainer()
-
+        X = np.array(X)
         if len(X) > max_samples:
             idx = np.random.choice(len(X), max_samples, replace=False)
-            X_sample = X[idx]
-            print(f"[XAI] Subsampled {max_samples} rows for SHAP computation")
-        else:
-            X_sample = X
-
-        print(f"[XAI] Computing XGBoost SHAP values for {len(X_sample)} samples...")
-        shap_values = self.xgb_explainer.shap_values(X_sample)
-        self.shap_values_xgb = shap_values
-        self.X_sample_xgb = X_sample
-        print(f"[XAI] SHAP values computed. "
-              f"Shape: {np.array(shap_values).shape}")
-        return shap_values
-
-    def compute_lstm_shap(self, X_seq: np.ndarray,
-                           max_samples: int = 500) -> np.ndarray:
-        """
-        Compute SHAP values for Bi-LSTM using DeepExplainer.
-
-        Returns per-time-step, per-feature attributions.
-        Shape: (n_samples, seq_len, n_features)
-        """
-        if self.deep_explainer is None:
-            print("[XAI] DeepExplainer not set up — run setup_deep_explainer() first")
-            return None
-
-        import torch
-        if len(X_seq) > max_samples:
-            idx = np.random.choice(len(X_seq), max_samples, replace=False)
-            X_seq = X_seq[idx]
-
-        print(f"[XAI] Computing Bi-LSTM SHAP values for {len(X_seq)} sequences...")
-        X_tensor = torch.tensor(X_seq, dtype=torch.float32).to(
-            self.bilstm_trainer.device
-        )
-        shap_values = self.deep_explainer.shap_values(X_tensor)
-        print("[XAI] LSTM SHAP values computed.")
-        return shap_values
-
-    # ══════════════════════════════════════════════════════════════
-    # GLOBAL VISUALISATIONS
-    # ══════════════════════════════════════════════════════════════
+            X = X[idx]
+            print(f"[XAI] Subsampled {max_samples} for SHAP")
+        print(f"[XAI] Computing SHAP values for {len(X)} samples...")
+        self.shap_values_xgb = self.xgb_explainer.shap_values(X)
+        self.X_sample_xgb = X
+        print(f"[XAI] SHAP done. Type: {type(self.shap_values_xgb)}")
+        return self.shap_values_xgb
 
     def plot_global_summary(self, shap_values=None, X=None,
-                             class_idx: int = None,
-                             title: str = "RAMS — Global Feature Importance (SHAP)",
-                             save_name: str = "shap_global_summary.png"):
-        """
-        Global SHAP summary beeswarm plot.
-        Shows which features drive predictions across the entire test set.
+                             save_name="shap_global_summary.png"):
+        try:
+            if shap_values is None:
+                shap_values = self.shap_values_xgb
+            if X is None:
+                X = self.X_sample_xgb
+            X = np.array(X)
+            n_feat = X.shape[1]
+            feat = (self.feature_names[:n_feat]
+                    if self.feature_names else
+                    [f"f{i}" for i in range(n_feat)])
 
-        For multi-class: shows SHAP for a specific class (class_idx)
-        or averaged across all classes if class_idx is None.
-        """
-        if shap_values is None:
-            shap_values = self.shap_values_xgb
-        if X is None:
-            X = self.X_sample_xgb
-
-        feature_names = (self.feature_names if self.feature_names
-                         else [f"f{i}" for i in range(X.shape[1])])
-
-        fig, ax = plt.subplots(figsize=(12, 8))
-        plt.sca(ax)
-
-        # Handle multi-class SHAP (list of arrays, one per class)
-        if isinstance(shap_values, list):
-            if class_idx is not None:
-                sv = shap_values[class_idx]
-                class_label = (self.class_names[class_idx]
-                               if class_idx < len(self.class_names)
-                               else f"Class {class_idx}")
-                title = f"{title}\n→ {class_label}"
+            # For multi-class use mean abs; for binary use directly
+            if isinstance(shap_values, list):
+                sv = np.mean([np.abs(np.array(s)) for s in shap_values], axis=0)
             else:
-                # Mean absolute SHAP across all classes
-                sv = np.mean([np.abs(s) for s in shap_values], axis=0)
-                title += "\n(Mean |SHAP| across all threat classes)"
-        else:
-            sv = shap_values
+                sv = np.array(shap_values)
+                if sv.ndim == 3:
+                    sv = np.abs(sv).mean(axis=2)
 
-        shap.summary_plot(sv, X, feature_names=feature_names,
-                          max_display=self.config.get("max_display", 20),
-                          show=False, plot_type="dot")
-        plt.title(title, fontsize=13, fontweight="bold", pad=15)
-        plt.tight_layout()
-
-        save_path = os.path.join(self.output_dir, save_name)
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
-        print(f"[XAI] Global summary plot saved: {save_path}")
-        return save_path
-
-    def plot_feature_importance_bar(self, shap_values=None,
-                                     save_name: str = "shap_feature_importance.png"):
-        """
-        Bar plot: mean absolute SHAP value per feature.
-        Provides a clean, non-technical summary for SOC analysts.
-        """
-        if shap_values is None:
-            shap_values = self.shap_values_xgb
-
-        feature_names = (self.feature_names if self.feature_names
-                         else [f"f{i}" for i in range(
-                             np.array(shap_values).shape[-1]
-                         )])
-
-        # Compute mean |SHAP| across samples (and classes if multi-class)
-        if isinstance(shap_values, list):
-            mean_abs = np.mean(
-                [np.abs(sv).mean(axis=0) for sv in shap_values], axis=0
-            )
-        else:
-            mean_abs = np.abs(shap_values).mean(axis=0)
-
-        mean_abs = np.asarray(mean_abs)
-        if mean_abs.ndim > 1:
-            mean_abs = mean_abs.mean(axis=-1)
-
-        top_n = self.config.get("max_display", 20)
-        top_idx = np.argsort(mean_abs)[-top_n:][::-1]
-        top_feat = [feature_names[i] if i < len(feature_names)
-                    else f"f{i}" for i in top_idx]
-        top_vals = mean_abs[top_idx]
-
-        # Colour-code by importance tier
-        colours = ["#d62728" if v > top_vals[0] * 0.7 else
-                   "#ff7f0e" if v > top_vals[0] * 0.4 else
-                   "#1f77b4" for v in top_vals]
-
-        fig, ax = plt.subplots(figsize=(10, 7))
-        bars = ax.barh(range(top_n), top_vals[::-1], color=colours[::-1])
-        ax.set_yticks(range(top_n))
-        ax.set_yticklabels(top_feat[::-1], fontsize=9)
-        ax.set_xlabel("Mean |SHAP Value|", fontsize=11)
-        ax.set_title("RAMS — Top Features for Threat Detection (SHAP)\n"
-                     "Objective 4: Explainable AI Feature Importance",
-                     fontsize=12, fontweight="bold")
-
-        # Legend
-        high = mpatches.Patch(color="#d62728", label="High importance (>70%)")
-        med = mpatches.Patch(color="#ff7f0e", label="Medium importance (40-70%)")
-        low = mpatches.Patch(color="#1f77b4", label="Lower importance (<40%)")
-        ax.legend(handles=[high, med, low], loc="lower right", fontsize=9)
-
-        ax.grid(axis="x", alpha=0.3)
-        plt.tight_layout()
-        save_path = os.path.join(self.output_dir, save_name)
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
-        print(f"[XAI] Feature importance bar plot saved: {save_path}")
-        return save_path
-
-    def plot_per_class_importance(self, shap_values: list = None,
-                                   save_name: str = "shap_per_class.png"):
-        """
-        Heatmap: SHAP importance per feature per threat class.
-        Reveals which features are diagnostic for each attack type.
-        """
-        if shap_values is None:
-            shap_values = self.shap_values_xgb
-        if not isinstance(shap_values, list):
-            print("[XAI] Per-class plot requires multi-class SHAP values (list).")
+            fig, ax = plt.subplots(figsize=(12, 8))
+            plt.sca(ax)
+            shap.summary_plot(sv, X, feature_names=feat,
+                              max_display=self.config.get("max_display", 20),
+                              show=False)
+            plt.title("RAMS — Global Feature Importance (SHAP)\nObjective 4: XAI",
+                      fontweight="bold")
+            plt.tight_layout()
+            path = os.path.join(self.output_dir, save_name)
+            plt.savefig(path, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"[XAI] Global summary: {path}")
+            return path
+        except Exception as e:
+            print(f"[XAI] Global summary plot skipped: {e}")
+            plt.close("all")
             return None
 
-        import seaborn as sns
+    def plot_feature_importance_bar(self, shap_values=None,
+                                     save_name="shap_feature_importance.png"):
+        try:
+            if shap_values is None:
+                shap_values = self.shap_values_xgb
 
-        n_classes = len(shap_values)
-        n_top = min(15, shap_values[0].shape[1])
-        feature_names = (self.feature_names if self.feature_names
-                         else [f"f{i}" for i in range(shap_values[0].shape[1])])
+            mean_abs = _mean_abs_shap(shap_values)
+            mean_abs = np.array(mean_abs, dtype=float).flatten()
+            n_feat = len(mean_abs)
 
-        # Mean |SHAP| per feature for each class
-        class_importances = np.array(
-            [np.abs(sv).mean(axis=0) for sv in shap_values]
-        )
+            feat = (self.feature_names[:n_feat]
+                    if self.feature_names else
+                    [f"f{i}" for i in range(n_feat)])
 
-        # Select top features by overall importance
-        overall = class_importances.mean(axis=0)
-        top_idx = np.argsort(overall)[-n_top:][::-1]
-        top_feat = [feature_names[i] if i < len(feature_names)
-                    else f"f{i}" for i in top_idx]
+            top_n = min(self.config.get("max_display", 20), n_feat)
+            top_idx = np.argsort(mean_abs)[-top_n:][::-1]
+            top_feat = [_safe_feat_name(feat, i) for i in top_idx]
+            top_vals = mean_abs[top_idx]
 
-        heatmap_data = pd.DataFrame(
-            class_importances[:, top_idx],
-            index=self.class_names[:n_classes] if self.class_names
-                  else [f"Class {i}" for i in range(n_classes)],
-            columns=top_feat
-        )
+            max_val = top_vals[0] if top_vals[0] > 0 else 1.0
+            colours = ["#d62728" if v > max_val * 0.7 else
+                       "#ff7f0e" if v > max_val * 0.4 else
+                       "#1f77b4" for v in top_vals]
 
-        fig, ax = plt.subplots(figsize=(14, max(6, n_classes * 0.5 + 2)))
-        sns.heatmap(heatmap_data, ax=ax, cmap="YlOrRd",
-                    annot=False, linewidths=0.3, linecolor="gray",
-                    cbar_kws={"label": "Mean |SHAP Value|"})
-        ax.set_title("RAMS — SHAP Feature Importance per Threat Class\n"
-                     "Objective 4: Class-Specific Explanations",
-                     fontsize=12, fontweight="bold")
-        ax.set_xlabel("Network Flow Features", fontsize=10)
-        ax.set_ylabel("Threat Category", fontsize=10)
-        plt.xticks(rotation=45, ha="right", fontsize=8)
-        plt.tight_layout()
+            fig, ax = plt.subplots(figsize=(10, 7))
+            ax.barh(range(top_n), top_vals[::-1], color=colours[::-1])
+            ax.set_yticks(range(top_n))
+            ax.set_yticklabels(top_feat[::-1], fontsize=9)
+            ax.set_xlabel("Mean |SHAP Value|")
+            ax.set_title("RAMS — Feature Importance (SHAP)\nObjective 4: XAI",
+                         fontweight="bold")
+            ax.grid(axis="x", alpha=0.3)
+            plt.tight_layout()
+            path = os.path.join(self.output_dir, save_name)
+            plt.savefig(path, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"[XAI] Feature importance bar: {path}")
+            return path
+        except Exception as e:
+            print(f"[XAI] Feature importance bar skipped: {e}")
+            plt.close("all")
+            return None
 
-        save_path = os.path.join(self.output_dir, save_name)
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
-        print(f"[XAI] Per-class SHAP heatmap saved: {save_path}")
-        return save_path
+    def plot_per_class_importance(self, shap_values=None,
+                                   save_name="shap_per_class.png"):
+        try:
+            if shap_values is None:
+                shap_values = self.shap_values_xgb
 
-    # ══════════════════════════════════════════════════════════════
-    # LOCAL EXPLANATIONS (PER ALERT)
-    # ══════════════════════════════════════════════════════════════
+            # Build per-class importance matrix
+            if isinstance(shap_values, list):
+                n_classes = len(shap_values)
+                class_imp = np.array(
+                    [np.abs(np.array(sv)).mean(axis=0) for sv in shap_values]
+                )
+            else:
+                sv = np.array(shap_values)
+                if sv.ndim == 3:
+                    # (n_samples, n_features, n_classes)
+                    n_classes = sv.shape[2]
+                    class_imp = np.abs(sv).mean(axis=0).T  # (n_classes, n_features)
+                else:
+                    print("[XAI] Per-class plot requires multi-class SHAP.")
+                    return None
 
-    def explain_single_alert(self, x: np.ndarray, prediction: int,
-                              confidence: float,
-                              alert_id: str = "ALERT-001") -> dict:
-        """
-        Generate a local SHAP explanation for a single detected threat.
+            n_top = min(15, class_imp.shape[1])
+            n_feat = class_imp.shape[1]
+            feat = (self.feature_names[:n_feat]
+                    if self.feature_names else
+                    [f"f{i}" for i in range(n_feat)])
 
-        Returns:
-          - Waterfall plot (visual explanation for SOC dashboard)
-          - Top contributing features (positive and negative)
-          - Human-readable explanation text
-          - JSON export for API integration
+            overall = class_imp.mean(axis=0)
+            top_idx = np.argsort(overall)[-n_top:][::-1]
+            top_feat = [_safe_feat_name(feat, i) for i in top_idx]
 
-        Args:
-            x: (n_features,) — single flow feature vector
-            prediction: predicted class index
-            confidence: ensemble confidence score
-            alert_id: unique alert identifier
-        """
-        if self.xgb_explainer is None:
-            self.setup_tree_explainer()
+            row_labels = (self.class_names[:n_classes]
+                          if self.class_names else
+                          [f"Class {i}" for i in range(n_classes)])
 
-        # Compute SHAP for this sample
-        x_2d = x.reshape(1, -1)
-        shap_vals = self.xgb_explainer.shap_values(x_2d)
-
-        # For multi-class, get SHAP values for the predicted class
-        if isinstance(shap_vals, list):
-            pred_shap = shap_vals[prediction][0]
-        else:
-            pred_shap = shap_vals[0]
-
-        feature_names = (self.feature_names if self.feature_names
-                         else [f"f{i}" for i in range(len(pred_shap))])
-
-        # Top positive contributors (pushing toward this threat class)
-        top_pos_idx = np.argsort(pred_shap)[::-1][:10]
-        top_neg_idx = np.argsort(pred_shap)[:10]
-
-        top_positive = [
-            {"feature": feature_names[i] if i < len(feature_names) else f"f{i}",
-             "shap_value": float(pred_shap[i]),
-             "feature_value": float(x[i])}
-            for i in top_pos_idx if pred_shap[i] > 0
-        ]
-        top_negative = [
-            {"feature": feature_names[i] if i < len(feature_names) else f"f{i}",
-             "shap_value": float(pred_shap[i]),
-             "feature_value": float(x[i])}
-            for i in top_neg_idx if pred_shap[i] < 0
-        ]
-
-        threat_name = (self.class_names[prediction]
-                       if prediction < len(self.class_names)
-                       else f"Class {prediction}")
-
-        # Generate waterfall plot
-        plot_path = self._plot_waterfall(
-            pred_shap, x, feature_names, threat_name,
-            confidence, alert_id
-        )
-
-        # Human-readable explanation
-        explanation_text = self._generate_explanation_text(
-            threat_name, confidence, top_positive, top_negative
-        )
-
-        result = {
-            "alert_id": alert_id,
-            "threat_class": threat_name,
-            "confidence": float(confidence),
-            "shap_values": pred_shap.tolist(),
-            "top_positive_features": top_positive,
-            "top_negative_features": top_negative,
-            "explanation_text": explanation_text,
-            "plot_path": plot_path,
-        }
-
-        # Save JSON explanation
-        json_path = os.path.join(self.output_dir,
-                                  f"explanation_{alert_id}.json")
-        with open(json_path, "w") as f:
-            json.dump(result, f, indent=2)
-        print(f"[XAI] Alert explanation saved: {json_path}")
-
-        return result
-
-    def _plot_waterfall(self, shap_vals: np.ndarray, x: np.ndarray,
-                         feature_names: list, threat_name: str,
-                         confidence: float, alert_id: str) -> str:
-        """Generate waterfall plot for a single alert explanation."""
-        top_n = 15
-        sorted_idx = np.argsort(np.abs(shap_vals))[::-1][:top_n]
-        sorted_shap = shap_vals[sorted_idx]
-        sorted_feat = [feature_names[i] if i < len(feature_names)
-                       else f"f{i}" for i in sorted_idx]
-        sorted_vals = [x[i] for i in sorted_idx]
-
-        colours = ["#d62728" if v > 0 else "#1f77b4" for v in sorted_shap]
-
-        fig, ax = plt.subplots(figsize=(10, 7))
-        bars = ax.barh(range(top_n), sorted_shap[::-1], color=colours[::-1])
-        ax.set_yticks(range(top_n))
-        labels = [f"{f}\n(val={v:.2f})" for f, v in
-                  zip(sorted_feat[::-1], sorted_vals[::-1])]
-        ax.set_yticklabels(labels, fontsize=8)
-        ax.axvline(0, color="black", linewidth=0.8)
-        ax.set_xlabel("SHAP Value (impact on prediction)", fontsize=10)
-        ax.set_title(
-            f"RAMS — Alert Explanation [{alert_id}]\n"
-            f"Detected: {threat_name}  |  Confidence: {confidence:.1%}",
-            fontsize=12, fontweight="bold"
-        )
-
-        # Annotation
-        pos_patch = mpatches.Patch(color="#d62728",
-                                    label="Pushes toward threat (↑ risk)")
-        neg_patch = mpatches.Patch(color="#1f77b4",
-                                    label="Pushes toward benign (↓ risk)")
-        ax.legend(handles=[pos_patch, neg_patch], fontsize=9)
-        ax.grid(axis="x", alpha=0.3)
-        plt.tight_layout()
-
-        fname = f"waterfall_{alert_id}.png"
-        save_path = os.path.join(self.output_dir, fname)
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        plt.close()
-        return save_path
-
-    def _generate_explanation_text(self, threat_name: str, confidence: float,
-                                    top_positive: list,
-                                    top_negative: list) -> str:
-        """
-        Generate human-readable threat explanation for SOC analysts.
-        Implements the "interpretable outputs for detected threats"
-        requirement from Tier 3 architecture.
-        """
-        lines = [
-            f"THREAT DETECTED: {threat_name}",
-            f"Confidence: {confidence:.1%}",
-            f"",
-            f"PRIMARY INDICATORS (features driving this detection):",
-        ]
-
-        for i, feat in enumerate(top_positive[:5], 1):
-            direction = "elevated" if feat["feature_value"] > 0 else "abnormal"
-            lines.append(
-                f"  {i}. {feat['feature']}: value={feat['feature_value']:.3f} "
-                f"— {direction} ({feat['shap_value']:+.4f} SHAP impact)"
+            hm = pd.DataFrame(
+                class_imp[:, top_idx],
+                index=row_labels,
+                columns=top_feat
             )
 
-        if top_negative:
-            lines += ["", "MITIGATING FACTORS (features suggesting lower risk):"]
-            for i, feat in enumerate(top_negative[:3], 1):
-                lines.append(
-                    f"  {i}. {feat['feature']}: value={feat['feature_value']:.3f} "
-                    f"({feat['shap_value']:+.4f} SHAP impact)"
-                )
+            try:
+                import seaborn as sns
+            except ImportError:
+                print("[XAI] seaborn not available, skipping per-class heatmap")
+                return None
 
-        lines += [
-            "",
-            "INTERPRETATION:",
-            f"  The hybrid ML engine (Bi-LSTM + XGBoost) flagged this flow as "
-            f"'{threat_name}' based on the above feature combination. "
-            f"The top indicators suggest anomalous traffic patterns consistent "
-            f"with known {threat_name} attack signatures.",
-            "",
-            "ACTION: Review MTD response recommendation in alert JSON.",
-        ]
-        return "\n".join(lines)
+            fig, ax = plt.subplots(
+                figsize=(14, max(6, n_classes * 0.5 + 2))
+            )
+            sns.heatmap(hm, ax=ax, cmap="YlOrRd", linewidths=0.3,
+                        cbar_kws={"label": "Mean |SHAP|"})
+            ax.set_title("RAMS — SHAP Importance per Threat Class\nObjective 4",
+                         fontweight="bold")
+            plt.xticks(rotation=45, ha="right", fontsize=8)
+            plt.tight_layout()
+            path = os.path.join(self.output_dir, save_name)
+            plt.savefig(path, dpi=150, bbox_inches="tight")
+            plt.close()
+            print(f"[XAI] Per-class heatmap: {path}")
+            return path
+        except Exception as e:
+            print(f"[XAI] Per-class heatmap skipped: {e}")
+            plt.close("all")
+            return None
 
-    # ══════════════════════════════════════════════════════════════
-    # FULL XAI PIPELINE
-    # ══════════════════════════════════════════════════════════════
+    def explain_single_alert(self, x, prediction, confidence,
+                              alert_id="ALERT-001"):
+        try:
+            if self.xgb_explainer is None:
+                self.setup_tree_explainer()
 
-    def run_full_xai_pipeline(self, X_test: np.ndarray,
-                               y_test: np.ndarray,
-                               predictions: np.ndarray,
-                               confidences: np.ndarray,
-                               X_seq_background: np.ndarray = None):
-        """
-        Run complete Objective 4 XAI pipeline:
-          1. Setup TreeExplainer for XGBoost
-          2. Compute global SHAP values
-          3. Generate global summary + feature importance plots
-          4. Generate per-class heatmap
-          5. Explain top high-confidence alerts
-          6. (Optional) DeepExplainer for Bi-LSTM
+            x = np.array(x).flatten()
+            shap_vals = self.xgb_explainer.shap_values(x.reshape(1, -1))
 
-        Args:
-            X_test: test features (flat, for XGBoost)
-            y_test: true labels
-            predictions: ensemble predictions
-            confidences: ensemble confidence scores
-            X_seq_background: background sequences for LSTM SHAP (optional)
-        """
+            # Extract for predicted class
+            if isinstance(shap_vals, list):
+                pred_idx = min(int(prediction), len(shap_vals) - 1)
+                pred_shap = np.array(shap_vals[pred_idx]).flatten()
+            else:
+                sv = np.array(shap_vals)
+                if sv.ndim == 3:
+                    pred_idx = min(int(prediction), sv.shape[2] - 1)
+                    pred_shap = sv[0, :, pred_idx]
+                else:
+                    pred_shap = sv.flatten()
+
+            n = len(pred_shap)
+            feat = (self.feature_names[:n]
+                    if self.feature_names else
+                    [f"f{i}" for i in range(n)])
+
+            top_pos_idx = np.argsort(pred_shap)[::-1][:10]
+            top_neg_idx = np.argsort(pred_shap)[:10]
+
+            top_pos = [{"feature": _safe_feat_name(feat, i),
+                        "shap_value": float(pred_shap[i]),
+                        "feature_value": float(x[i]) if i < len(x) else 0.0}
+                       for i in top_pos_idx if pred_shap[i] > 0]
+            top_neg = [{"feature": _safe_feat_name(feat, i),
+                        "shap_value": float(pred_shap[i]),
+                        "feature_value": float(x[i]) if i < len(x) else 0.0}
+                       for i in top_neg_idx if pred_shap[i] < 0]
+
+            threat = (_safe_feat_name(self.class_names, prediction)
+                      if self.class_names else f"Class {prediction}")
+
+            plot_path = self._plot_waterfall(
+                pred_shap, x, feat, threat, confidence, alert_id
+            )
+
+            result = {
+                "alert_id": alert_id,
+                "threat_class": threat,
+                "confidence": float(confidence),
+                "top_positive_features": top_pos,
+                "top_negative_features": top_neg,
+                "plot_path": plot_path,
+            }
+            json_path = os.path.join(
+                self.output_dir, f"explanation_{alert_id}.json"
+            )
+            with open(json_path, "w") as f:
+                json.dump(result, f, indent=2)
+            return result
+        except Exception as e:
+            print(f"[XAI] Alert explanation skipped: {e}")
+            return {"alert_id": alert_id, "error": str(e),
+                    "top_positive_features": [], "top_negative_features": []}
+
+    def _plot_waterfall(self, shap_vals, x, feat, threat, conf, alert_id):
+        try:
+            shap_vals = np.array(shap_vals).flatten()
+            x = np.array(x).flatten()
+            top_n = min(15, len(shap_vals))
+            idx = np.argsort(np.abs(shap_vals))[::-1][:top_n]
+            sv = shap_vals[idx]
+            fn = [_safe_feat_name(feat, i) for i in idx]
+            fv = [float(x[i]) if i < len(x) else 0.0 for i in idx]
+            colours = ["#d62728" if v > 0 else "#1f77b4" for v in sv]
+
+            fig, ax = plt.subplots(figsize=(10, 7))
+            ax.barh(range(top_n), sv[::-1], color=colours[::-1])
+            ax.set_yticks(range(top_n))
+            ax.set_yticklabels(
+                [f"{f}\n(val={v:.2f})" for f, v in zip(fn[::-1], fv[::-1])],
+                fontsize=8
+            )
+            ax.axvline(0, color="black", lw=0.8)
+            ax.set_xlabel("SHAP Value")
+            ax.set_title(f"Alert [{alert_id}] — {threat} | Conf: {conf:.1%}",
+                         fontweight="bold")
+            plt.tight_layout()
+            path = os.path.join(self.output_dir, f"waterfall_{alert_id}.png")
+            plt.savefig(path, dpi=150, bbox_inches="tight")
+            plt.close()
+            return path
+        except Exception as e:
+            print(f"[XAI] Waterfall plot skipped: {e}")
+            plt.close("all")
+            return None
+
+    def run_full_xai_pipeline(self, X_test, y_test, predictions,
+                               confidences, X_seq_background=None):
         print("\n" + "="*60)
         print(" RAMS — Objective 4: Explainable AI Pipeline")
         print("="*60)
 
-        # Step 1: Setup
+        # Step 1: Setup + compute SHAP
         self.setup_tree_explainer()
-
-        # Step 2: Compute global SHAP
         shap_values = self.compute_xgb_shap(X_test)
 
-        # Step 3: Global plots
+        # Step 2: Global plots (each wrapped — won't crash the pipeline)
         print("\n[XAI] Generating global plots...")
-        self.plot_global_summary(shap_values, self.X_sample_xgb,
-                                  save_name="shap_global_summary.png")
-        self.plot_feature_importance_bar(shap_values,
-                                          save_name="shap_feature_importance.png")
+        self.plot_global_summary(shap_values, self.X_sample_xgb)
+        self.plot_feature_importance_bar(shap_values)
+        self.plot_per_class_importance(shap_values)
 
-        # Step 4: Per-class heatmap
-        if isinstance(shap_values, list):
-            self.plot_per_class_importance(shap_values,
-                                            save_name="shap_per_class.png")
+        # Step 3: Local alert explanations
+        print("\n[XAI] Generating local alert explanations...")
+        explanations = []
+        confidences = np.array(confidences)
+        predictions = np.array(predictions)
 
-        # Step 5: Local explanations for high-confidence detections
-        print("\n[XAI] Generating local explanations for top alerts...")
-        alert_explanations = []
-
-        # Find high-confidence true positives (non-BENIGN predictions)
-        if len(self.X_sample_xgb) > 0:
-            n_explain = min(5, len(self.X_sample_xgb))
-            high_conf_idx = np.argsort(confidences[:len(self.X_sample_xgb)])[::-1]
-
-            for rank, idx in enumerate(high_conf_idx[:n_explain]):
-                x_sample = self.X_sample_xgb[idx]
-                pred_class = int(predictions[min(idx, len(predictions)-1)])
-                conf = float(confidences[min(idx, len(confidences)-1)])
-
-                if pred_class == 0:
-                    continue   # Skip BENIGN explanations (focus on threats)
-
-                explanation = self.explain_single_alert(
-                    x_sample, pred_class, conf,
+        # Only explain non-BENIGN high-confidence detections
+        non_benign = np.where(predictions != 0)[0]
+        if len(non_benign) > 0:
+            sorted_by_conf = non_benign[
+                np.argsort(confidences[non_benign])[::-1]
+            ]
+            for rank, idx in enumerate(sorted_by_conf[:5]):
+                if idx >= len(self.X_sample_xgb):
+                    continue
+                pred = int(predictions[idx])
+                conf = float(confidences[idx])
+                exp = self.explain_single_alert(
+                    self.X_sample_xgb[idx], pred, conf,
                     alert_id=f"ALERT-{rank+1:03d}"
                 )
-                alert_explanations.append(explanation)
-                print(f"\n  Alert {rank+1}: {explanation['threat_class']} "
-                      f"(conf={conf:.1%})")
-                print(f"  Top feature: "
-                      f"{explanation['top_positive_features'][0]['feature'] if explanation['top_positive_features'] else 'N/A'}")
+                explanations.append(exp)
+                threat = exp.get("threat_class", f"Class {pred}")
+                top_f = (exp["top_positive_features"][0]["feature"]
+                         if exp.get("top_positive_features") else "N/A")
+                print(f"  Alert {rank+1}: {threat} "
+                      f"(conf={conf:.1%}) | Top: {top_f}")
+        else:
+            print("[XAI] No non-BENIGN predictions found for local explanation.")
 
-        # Step 6: Optional LSTM SHAP
-        if X_seq_background is not None and self.bilstm_trainer is not None:
-            print("\n[XAI] Computing Bi-LSTM SHAP (DeepExplainer)...")
-            try:
-                n_bg = min(
-                    self.config.get("n_background_samples", 100),
-                    len(X_seq_background)
-                )
-                bg = X_seq_background[:n_bg]
-                self.setup_deep_explainer(bg)
-                lstm_shap = self.compute_lstm_shap(X_seq_background, max_samples=200)
-                if lstm_shap is not None:
-                    print("[XAI] LSTM SHAP computed (temporal feature attribution).")
-            except Exception as e:
-                print(f"[XAI] LSTM SHAP failed (non-critical): {e}")
-
-        # Summary report
-        self._save_xai_summary(alert_explanations)
-
-        print(f"\n[XAI] Objective 4 complete. All outputs saved to: {self.output_dir}")
-        return alert_explanations
-
-    def _save_xai_summary(self, explanations: list):
-        """Save a human-readable XAI summary report."""
+        # Step 4: Save text report
         report_path = os.path.join(self.output_dir, "xai_report.txt")
         with open(report_path, "w") as f:
-            f.write("=" * 70 + "\n")
-            f.write("RAMS FRAMEWORK — XAI THREAT EXPLANATION REPORT\n")
-            f.write("Objective 4: Explainable AI for Transparent Decision-Making\n")
-            f.write("=" * 70 + "\n\n")
-
+            f.write("RAMS XAI THREAT EXPLANATION REPORT\nObjective 4\n\n")
             for exp in explanations:
-                f.write(f"{'─'*60}\n")
-                f.write(f"Alert ID: {exp['alert_id']}\n")
-                f.write(exp["explanation_text"])
-                f.write("\n\n")
-
-        print(f"[XAI] XAI report saved: {report_path}")
+                f.write(f"Alert: {exp.get('alert_id')} — "
+                        f"{exp.get('threat_class','?')}\n")
+                f.write(f"Confidence: {exp.get('confidence',0):.1%}\n")
+                top = exp.get("top_positive_features", [])
+                if top:
+                    f.write(f"Top indicator: {top[0]['feature']}\n")
+                f.write("\n")
+        print(f"[XAI] Report: {report_path}")
+        print(f"[XAI] Objective 4 complete. Outputs: {self.output_dir}")
+        return explanations

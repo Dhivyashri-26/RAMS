@@ -1,0 +1,178 @@
+{
+  "timestamp": "2026-08-08T20:36:43.284008",
+  "framework": "RAMS \u2014 Objective 5: MTD",
+  "effectiveness": {
+    "total_mtd_actions": 3,
+    "successful_actions": 3,
+    "success_rate": 1.0,
+    "attacks_neutralised": 3,
+    "neutralisation_rate": 0.5,
+    "mean_execution_ms": 30.344804128011067,
+    "max_execution_ms": 40.38882255554199,
+    "min_execution_ms": 22.103309631347656,
+    "actions_by_type": {
+      "ip_shuffling": {
+        "count": 1,
+        "success_rate": 1.0,
+        "avg_exec_ms": 40.38882255554199
+      },
+      "port_hopping": {
+        "count": 2,
+        "success_rate": 1.0,
+        "avg_exec_ms": 25.322794914245605
+      }
+    },
+    "services": {
+      "svc-web": {
+        "total_actions": 1,
+        "attack_count": 2,
+        "current_state": "under_attack",
+        "current_ip": "10.0.1.10",
+        "current_port": 10692,
+        "current_image": "nginx:1.24"
+      },
+      "svc-api": {
+        "total_actions": 1,
+        "attack_count": 3,
+        "current_state": "under_attack",
+        "current_ip": "10.0.1.166",
+        "current_port": 9000,
+        "current_image": "fastapi-app:v2.0"
+      },
+      "svc-db": {
+        "total_actions": 0,
+        "attack_count": 0,
+        "current_state": "normal",
+        "current_ip": "10.0.1.12",
+        "current_port": 5432,
+        "current_image": "pgproxy:v1.0"
+      },
+      "svc-cache": {
+        "total_actions": 1,
+        "attack_count": 1,
+        "current_state": "recovered",
+        "current_ip": "10.0.1.13",
+        "current_port": 10250,
+        "current_image": "flask-app:v1.1"
+      }
+    }
+  },
+  "event_log": [
+    {
+      "event_id": "MTD-20260808203643226225",
+      "timestamp": "2026-08-08T20:36:43.226295",
+      "service_id": "svc-api",
+      "action": "ip_shuffling",
+      "reason": "High-confidence threat",
+      "old_state": {
+        "ip": "10.0.1.11",
+        "port": 9000,
+        "container": "fastapi-app:v2.0",
+        "pod": "api-pod-def456"
+      },
+      "new_state": {
+        "ip": "10.0.1.166",
+        "port": 9000,
+        "container": "fastapi-app:v2.0",
+        "pod": "api-pod-def456"
+      },
+      "execution_ms": 40.38882255554199,
+      "success": true,
+      "neutralised": true
+    },
+    {
+      "event_id": "MTD-20260808203643248983",
+      "timestamp": "2026-08-08T20:36:43.249026",
+      "service_id": "svc-cache",
+      "action": "port_hopping",
+      "reason": "Port scan detected",
+      "old_state": {
+        "ip": "10.0.1.13",
+        "port": 6379,
+        "container": "flask-app:v1.1",
+        "pod": "cache-pod-jkl012"
+      },
+      "new_state": {
+        "ip": "10.0.1.13",
+        "port": 10250,
+        "container": "flask-app:v1.1",
+        "pod": "cache-pod-jkl012"
+      },
+      "execution_ms": 22.103309631347656,
+      "success": true,
+      "neutralised": true
+    },
+    {
+      "event_id": "MTD-20260808203643281507",
+      "timestamp": "2026-08-08T20:36:43.281568",
+      "service_id": "svc-web",
+      "action": "port_hopping",
+      "reason": "High-confidence threat",
+      "old_state": {
+        "ip": "10.0.1.10",
+        "port": 8080,
+        "container": "nginx:1.24",
+        "pod": "web-pod-abc123"
+      },
+      "new_state": {
+        "ip": "10.0.1.10",
+        "port": 10692,
+        "container": "nginx:1.24",
+        "pod": "web-pod-abc123"
+      },
+      "execution_ms": 28.542280197143555,
+      "success": true,
+      "neutralised": true
+    }
+  ],
+  "alert_log": [
+    {
+      "alert_id": "DET-DOS -001",
+      "timestamp": "2026-08-08T20:36:43.184984",
+      "threat_type": "DoS Hulk",
+      "severity": "medium",
+      "confidence": 0.9984127283096313,
+      "target": "svc-api"
+    },
+    {
+      "alert_id": "DET-PORT-001",
+      "timestamp": "2026-08-08T20:36:43.226482",
+      "threat_type": "PortScan",
+      "severity": "high",
+      "confidence": 0.9932440519332886,
+      "target": "svc-cache"
+    },
+    {
+      "alert_id": "DET-DDOS-001",
+      "timestamp": "2026-08-08T20:36:43.249167",
+      "threat_type": "DDoS",
+      "severity": "low",
+      "confidence": 0.9995508193969727,
+      "target": "svc-api"
+    },
+    {
+      "alert_id": "DET-DOS -001",
+      "timestamp": "2026-08-08T20:36:43.252204",
+      "threat_type": "DoS GoldenEye",
+      "severity": "critical",
+      "confidence": 0.9973345398902893,
+      "target": "svc-api"
+    },
+    {
+      "alert_id": "DET-FTP--001",
+      "timestamp": "2026-08-08T20:36:43.252259",
+      "threat_type": "FTP-Patator",
+      "severity": "low",
+      "confidence": 0.9988555908203125,
+      "target": "svc-web"
+    },
+    {
+      "alert_id": "DET-SSH--001",
+      "timestamp": "2026-08-08T20:36:43.281787",
+      "threat_type": "SSH-Patator",
+      "severity": "high",
+      "confidence": 0.9989153146743774,
+      "target": "svc-web"
+    }
+  ]
+}

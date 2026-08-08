@@ -1,0 +1,30 @@
+[
+  {
+    "attack_type": "DDoS",
+    "start_step": 600,
+    "target": "RSU_001",
+    "n_sources": 40,
+    "timestamp": "2026-08-08T18:57:08.446750"
+  },
+  {
+    "attack_type": "Botnet",
+    "start_step": 1200,
+    "target": "10.0.0.1",
+    "n_sources": 15,
+    "timestamp": "2026-08-08T18:57:15.259118"
+  },
+  {
+    "attack_type": "DoS",
+    "start_step": 1800,
+    "target": "RSU_001",
+    "n_sources": 1,
+    "timestamp": "2026-08-08T18:57:18.294640"
+  },
+  {
+    "attack_type": "PortScan",
+    "start_step": 2400,
+    "target": "RSU_008",
+    "n_sources": 1,
+    "timestamp": "2026-08-08T18:57:21.691635"
+  }
+]
